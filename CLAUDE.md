@@ -5,7 +5,7 @@ This is a silly, animated 2D music video for the user's indie-pop song "Run, Lit
 ## Status (as of 2026-11-17)
 - `samples.html` is a preview page with four animated sample scenes. It is published as a private artifact at https://claude.ai/artifact/8CdHm6nJ6fhPKRNePYEGyy.
 - The user asked to see samples before the full build. **Next step:** get their feedback on the look, then build the full video according to `PLAN.md`.
-- The song MP3 is not here yet. The user will add it as `toaster.mp3`. The samples use a placeholder 120 BPM beat until then.
+- The song is `toaster.mp3` (copied from `Run Little Toaster.mp3`; the user chose this version over `Run Little Toaster(1).mp3`). The samples still use a placeholder 120 BPM beat; the next step is syncing to this track.
 
 ## Decisions the user made
 - **three.js** is the rendering library (the user asked for it).
