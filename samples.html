@@ -1,0 +1,631 @@
+<title>Run, Little Toaster</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Luckiest+Guy&family=Nunito:wght@400;700;800&display=swap">
+<style>
+  /* Layout: one big 16:9 stage like a video player, scene picker cards underneath. Single committed look: butter-yellow kitchen cartoon. */
+  :root {
+    --butter: #ffd54a;
+    --ink: #1d1b2a;
+    --paper: #fff6d6;
+    --jam: #ff4d6d;
+    --crust: #c9853e;
+    --display: "Luckiest Guy", "Arial Black", Impact, sans-serif;
+    --body: "Nunito", system-ui, sans-serif;
+    color-scheme: light;
+  }
+  html { background: var(--butter); }
+  body {
+    background: var(--butter); color: var(--ink); font-family: var(--body); font-size: 16px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 28px 56px;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+  header { display: flex; flex-direction: column; gap: 8px; }
+  h1 {
+    font-family: var(--display); font-weight: 400; font-size: clamp(2.4rem, 7vw, 4.4rem);
+    line-height: .95; margin: 0; letter-spacing: .02em; text-wrap: balance;
+    text-shadow: 3px 3px 0 var(--paper), 6px 6px 0 var(--ink);
+  }
+  .sub { margin: 0; max-width: 65ch; font-size: 1.05rem; line-height: 1.5; }
+  .stage {
+    position: relative; aspect-ratio: 16 / 9; max-width: 100%;
+    border: 4px solid var(--ink); border-radius: 16px; overflow: hidden;
+    background: var(--ink); box-shadow: 8px 8px 0 var(--ink);
+  }
+  .stage canvas { display: block; width: 100%; height: 100%; }
+  .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .ctl {
+    font: inherit; font-weight: 800; cursor: pointer; background: var(--jam); color: #fff;
+    border: 3px solid var(--ink); border-radius: 999px; padding: 8px 20px; box-shadow: 3px 3px 0 var(--ink);
+  }
+  .ctl:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--ink); }
+  .scrub { flex: 1 1 200px; min-width: 0; accent-color: var(--jam); }
+  .time { font-variant-numeric: tabular-nums; font-weight: 800; min-width: 7ch; }
+  .scenes { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+  .scene-btn {
+    font: inherit; text-align: left; cursor: pointer; color: var(--ink);
+    background: var(--paper); border: 3px solid var(--ink); border-radius: 14px;
+    padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 4px; min-width: 0;
+  }
+  .scene-btn:hover { background: #fff; }
+  .scene-btn[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+  .scene-btn .tag { font-size: .74rem; letter-spacing: .1em; text-transform: uppercase; font-weight: 800; opacity: .75; }
+  .scene-btn .name { font-family: var(--display); font-size: 1.4rem; letter-spacing: .03em; line-height: 1.1; }
+  .scene-btn .desc { font-size: .93rem; line-height: 1.4; }
+  .scene-btn:focus-visible, .ctl:focus-visible, .scrub:focus-visible { outline: 3px solid var(--jam); outline-offset: 3px; }
+  .note { margin: 0; font-size: .92rem; max-width: 70ch; line-height: 1.5; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Run, Little Toaster</h1>
+    <p class="sub">Four sample scenes for the music video. Everything is drawn in code with three.js in a flat 2D cartoon style, with the lyrics burned into the frame the way they'll appear on YouTube.</p>
+  </header>
+
+  <div class="stage" id="stage"><canvas id="c" aria-label="Animated preview of the selected scene"></canvas></div>
+
+  <div class="bar">
+    <button class="ctl" id="play" type="button">Pause</button>
+    <input class="scrub" id="scrub" type="range" min="0" max="10" step="0.01" value="0" aria-label="Scrub through the scene">
+    <span class="time" id="time">0.0s</span>
+  </div>
+
+  <div class="scenes" id="scenes"></div>
+
+  <p class="note">Timing runs on a placeholder 120 BPM beat. Once the song is in the folder, scene cuts, toast pops and lyric pop-ins lock to the real track, and the full video exports as a 1080p MP4.</p>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(() => {
+const W = 16, H = 9, BPM = 120, BEAT = 60 / BPM;
+const INK = 0x1d1b2a, CHROME = 0xc7d1db, CHROME_D = 0x8e9bab, JAM = 0xff4d6d, SHOE = 0xff3b3b, CORD = 0x3a3a4a;
+const CRUST = 0xc9853e, CRUMB = 0xf6d58e, BAGEL = 0xd9a25b, GOLD = 0xffc93c;
+
+/* ---------- helpers ---------- */
+const clamp01 = x => Math.max(0, Math.min(1, x));
+const smooth = x => { x = clamp01(x); return x * x * (3 - 2 * x); };
+const backOut = x => { x = clamp01(x); const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+const elasticOut = x => { x = clamp01(x); if (x === 0 || x === 1) return x; return Math.pow(2, -10 * x) * Math.sin((x * 10 - 0.75) * (2 * Math.PI) / 3) + 1; };
+const lerpC = (a, b, k) => new THREE.Color(a).lerp(new THREE.Color(b), clamp01(k));
+const pulse = t => Math.exp(-((t % BEAT + BEAT) % BEAT) * 7);
+function rng(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+const M = c => (c && c.isMaterial) ? c : new THREE.MeshBasicMaterial({ color: c });
+const MT = (c, o) => new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: o, depthWrite: false });
+function at(o, x, y, z = 0) { o.position.set(x, y, z); return o; }
+function rrShape(w, h, r) {
+  const s = new THREE.Shape(), x = -w / 2, y = -h / 2; r = Math.max(0.0001, Math.min(r, w / 2, h / 2));
+  s.moveTo(x + r, y); s.lineTo(x + w - r, y); s.quadraticCurveTo(x + w, y, x + w, y + r);
+  s.lineTo(x + w, y + h - r); s.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  s.lineTo(x + r, y + h); s.quadraticCurveTo(x, y + h, x, y + h - r);
+  s.lineTo(x, y + r); s.quadraticCurveTo(x, y, x + r, y); return s;
+}
+function rr(w, h, r, color, o = 0.07) {
+  const g = new THREE.Group();
+  if (o > 0) g.add(at(new THREE.Mesh(new THREE.ShapeGeometry(rrShape(w + 2 * o, h + 2 * o, r + o)), M(INK)), 0, 0, -0.01));
+  g.fill = new THREE.Mesh(new THREE.ShapeGeometry(rrShape(w, h, r)), M(color)); g.add(g.fill); return g;
+}
+function circ(r, color, o = 0.06) {
+  const g = new THREE.Group();
+  if (o > 0) g.add(at(new THREE.Mesh(new THREE.CircleGeometry(r + o, 40), M(INK)), 0, 0, -0.01));
+  g.fill = new THREE.Mesh(new THREE.CircleGeometry(r, 40), M(color)); g.add(g.fill); return g;
+}
+function ring(r0, r1, color, o = 0.06) {
+  const g = new THREE.Group();
+  if (o > 0) g.add(at(new THREE.Mesh(new THREE.RingGeometry(Math.max(0.01, r0 - o), r1 + o, 40), M(INK)), 0, 0, -0.01));
+  g.add(new THREE.Mesh(new THREE.RingGeometry(r0, r1, 40), M(color))); return g;
+}
+function frame(w, h, r, t, color, o = 0.07) {
+  const shp = (w, h, r, t) => { const s = rrShape(w, h, r); s.holes.push(rrShape(w - 2 * t, h - 2 * t, Math.max(0.01, r - t))); return s; };
+  const g = new THREE.Group();
+  g.add(at(new THREE.Mesh(new THREE.ShapeGeometry(shp(w + 2 * o, h + 2 * o, r + o, t + 2 * o)), M(INK)), 0, 0, -0.01));
+  g.add(new THREE.Mesh(new THREE.ShapeGeometry(shp(w, h, r, t)), M(color))); return g;
+}
+function plane(w, h, color) { return new THREE.Mesh(new THREE.PlaneGeometry(w, h), M(color)); }
+function gradPlane(w, h, top, bot) {
+  const geo = new THREE.PlaneGeometry(w, h, 1, 1), c = new Float32Array(12);
+  geo.setAttribute('color', new THREE.BufferAttribute(c, 3));
+  const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true }));
+  m.setColors = (a, b) => { const A = new THREE.Color(a), B = new THREE.Color(b); [A, A, B, B].forEach((col, i) => { c[i * 3] = col.r; c[i * 3 + 1] = col.g; c[i * 3 + 2] = col.b; }); geo.attributes.color.needsUpdate = true; };
+  m.setColors(top, bot); return m;
+}
+/* a limb pivots at its top; `.end` sits at its tip for chaining */
+function limb(len, th, color, o = 0) {
+  const g = new THREE.Group(); g.add(at(rr(th, len + th, th / 2, color, o), 0, -len / 2, 0));
+  g.end = at(new THREE.Group(), 0, -len, 0.01); g.add(g.end); return g;
+}
+
+/* ---------- text drawn into the frame ---------- */
+const redraws = [];
+function textPlane(w, h, px = 200) {
+  const cv = document.createElement('canvas'); cv.width = Math.round(px * w / h); cv.height = px;
+  const tex = new THREE.CanvasTexture(cv); tex.anisotropy = 4;
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
+  m.cv = cv; m.ctx = cv.getContext('2d'); m.tex = tex; return m;
+}
+function drawText(tp, text, o = {}) {
+  const { cv, ctx } = tp, w = cv.width, h = cv.height; ctx.clearRect(0, 0, w, h);
+  if (o.bg) { ctx.fillStyle = o.bg; ctx.fillRect(0, 0, w, h); }
+  const fam = o.font || '"Luckiest Guy", "Arial Black", Impact, sans-serif';
+  let fs = h * (o.size || 0.62); ctx.font = `${fs}px ${fam}`;
+  const mw = w * 0.9, tw = ctx.measureText(text).width; if (tw > mw) { fs *= mw / tw; ctx.font = `${fs}px ${fam}`; }
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; const x = w / 2, y = h * 0.56;
+  if (o.stroke !== null) {
+    const ink = o.stroke || '#1d1b2a'; ctx.lineJoin = 'round'; ctx.lineWidth = fs * 0.2; ctx.strokeStyle = ink; ctx.fillStyle = ink;
+    ctx.strokeText(text, x + fs * 0.06, y + fs * 0.08); ctx.fillText(text, x + fs * 0.06, y + fs * 0.08); ctx.strokeText(text, x, y);
+  }
+  ctx.fillStyle = o.fill || '#fff'; ctx.fillText(text, x, y); tp.tex.needsUpdate = true;
+}
+function label(w, h, text, o = {}, px) { const tp = textPlane(w, h, px); const f = () => drawText(tp, text, o); f(); redraws.push(f); return tp; }
+function makeCaption(hud, y = -3.45) {
+  const tp = at(textPlane(15, 1.7, 210), 0, y, 1); hud.add(tp); let key = null;
+  tp.say = (txt, style = {}) => { const k = txt + '|' + (style.fill || ''); if (k !== key) { key = k; tp.txt = txt; tp.style = style; drawText(tp, txt, style); } };
+  redraws.push(() => { if (tp.txt != null) drawText(tp, tp.txt, tp.style); }); return tp;
+}
+function lyricAt(list, t) { let cur = list[0]; for (const l of list) if (t >= l[0]) cur = l; return { start: cur[0], text: cur[1], style: cur[2] || {} }; }
+function sing(cap, list, t) {
+  const l = lyricAt(list, t); cap.say(l.text, l.style);
+  const k = backOut((t - l.start) / 0.28); cap.scale.set(0.6 + 0.4 * k, 0.6 + 0.4 * k, 1); return l;
+}
+
+/* ---------- characters ---------- */
+function toastShape(w, h) {
+  const s = new THREE.Shape(), x = w / 2, y0 = -h / 2, top = h / 2 - w * 0.25, r = w * 0.25, c = 0.08;
+  s.moveTo(-x + c, y0); s.lineTo(x - c, y0); s.quadraticCurveTo(x, y0, x, y0 + c); s.lineTo(x, top);
+  s.absarc(x - r, top, r, 0, Math.PI, false); s.absarc(-x + r, top, r, 0, Math.PI, false);
+  s.lineTo(-x, y0 + c); s.quadraticCurveTo(-x, y0, -x + c, y0); return s;
+}
+function makeToast(w, h, crust = CRUST, o = 0.06) {
+  const g = new THREE.Group();
+  g.add(at(new THREE.Mesh(new THREE.ShapeGeometry(toastShape(w + 2 * o, h + 2 * o)), M(INK)), 0, 0, -0.01));
+  g.add(new THREE.Mesh(new THREE.ShapeGeometry(toastShape(w, h)), M(crust)));
+  g.add(at(new THREE.Mesh(new THREE.ShapeGeometry(toastShape(w - 0.2, h - 0.2)), M(CRUMB)), 0, -0.02, 0.01));
+  return g;
+}
+function makeEye(r, lidColor) {
+  const e = new THREE.Group(); e.add(circ(r, 0xffffff, r * 0.16));
+  e.pupil = at(circ(r * 0.45, INK, 0), 0, 0, 0.03); e.add(e.pupil);
+  e.pupil.add(at(circ(r * 0.14, 0xffffff, 0), r * 0.14, r * 0.14, 0.01));
+  e.lid = at(new THREE.Group(), 0, r * 1.2, 0.06); e.lid.add(at(circ(r * 1.22, lidColor, 0), 0, -r * 1.2, 0));
+  e.lid.add(at(rr(r * 2.3, r * 0.2, r * 0.1, INK, 0), 0, -r * 2.3, 0.01)); e.lid.scale.y = 0.001; e.add(e.lid);
+  return e;
+}
+
+function makeToaster() {
+  const T = { root: new THREE.Group() };
+  const rig = new THREE.Group(); T.root.add(rig); T.rig = rig;
+  const body = new THREE.Group(); rig.add(body); T.body = body;
+  T.toasts = [-0.55, 0.55].map(x => { const tt = at(makeToast(0.78, 1.0), x, 1.45, -0.4); body.add(tt); return tt; });
+  body.add(at(rr(2.6, 2.0, 0.5, CHROME, 0.09), 0, 1, 0));
+  body.add(at(rr(2.0, 0.32, 0.16, CHROME_D, 0), 0, 0.3, 0.02));
+  const sh = at(rr(0.15, 0.95, 0.075, 0xffffff, 0), -0.98, 1.2, 0.03); sh.rotation.z = -0.1; body.add(sh);
+  body.add(at(circ(0.07, 0xffffff, 0), -1.0, 0.6, 0.03));
+  [-0.55, 0.55].forEach(x => body.add(at(rr(0.86, 0.12, 0.06, INK, 0), x, 1.9, 0.03)));
+  body.add(at(rr(0.16, 0.75, 0.07, CHROME_D, 0.05), 1.36, 1.05, -0.05));
+  body.add(at(rr(0.42, 0.22, 0.1, JAM, 0.05), 1.52, 1.3, 0.04));
+  [-0.9, 0.9].forEach(x => body.add(at(circ(0.16, 0xff9fb4, 0), x, 0.66, 0.04)));
+  T.eyes = [-0.5, 0.5].map(x => { const e = at(makeEye(0.36, CHROME), x, 1.05, 0.1); body.add(e); return e; });
+  T.brows = [[-0.5, -0.22], [0.5, 0.22]].map(([x, r]) => { const b = at(rr(0.55, 0.12, 0.06, INK, 0), x, 1.52, 0.2); b.rotation.z = r; body.add(b); return b; });
+  T.smile = at(new THREE.Mesh(new THREE.RingGeometry(0.15, 0.25, 24, 1, Math.PI + 0.35, Math.PI - 0.7), M(INK)), 0, 0.62, 0.1); body.add(T.smile);
+  T.oMouth = at(circ(0.13, 0x7a1f35, 0.05), 0, 0.52, 0.1); body.add(T.oMouth);
+  // the cord, tied on like a sweatband
+  const band = at(new THREE.Group(), 0, 1.72, 0.16); body.add(band); T.band = band;
+  band.add(rr(2.76, 0.22, 0.11, CORD, 0.05));
+  const knot = at(new THREE.Group(), -1.36, 0, 0.04); band.add(knot); knot.add(circ(0.14, CORD, 0.05));
+  T.tails = [0, 1].map(() => { const l = at(limb(0.6, 0.1, CORD, 0.04), 0, 0, -0.03); knot.add(l); return l; });
+  const plug = new THREE.Group(); T.tails[1].end.add(plug);
+  plug.add(at(rr(0.26, 0.22, 0.05, CORD, 0.04), 0, -0.08, 0));
+  [-0.06, 0.06].forEach(x => plug.add(at(rr(0.05, 0.14, 0.02, 0xd9dee5, 0.03), x, -0.26, -0.01)));
+  // legs + sneakers
+  T.legsRoot = at(new THREE.Group(), 0, 0.05, -0.15); rig.add(T.legsRoot);
+  T.legs = [-0.55, 0.55].map((x, i) => {
+    const th = at(limb(0.5, 0.13, INK), x, 0, i * 0.02); T.legsRoot.add(th);
+    const sn = limb(0.5, 0.13, INK); th.end.add(sn);
+    const shoe = new THREE.Group(); sn.end.add(shoe);
+    shoe.add(at(rr(0.64, 0.3, 0.15, SHOE, 0.05), 0.14, -0.06, 0.01));
+    shoe.add(at(rr(0.7, 0.09, 0.045, 0xffffff, 0.04), 0.15, -0.22, 0.02));
+    shoe.add(at(rr(0.2, 0.05, 0.025, 0xffffff, 0), 0.1, 0.0, 0.03));
+    return { th, sn, shoe };
+  });
+  // arms + cartoon gloves
+  T.armsRoot = at(new THREE.Group(), 0, 0, 0.25); rig.add(T.armsRoot);
+  T.arms = [-1.3, 1.3].map(x => {
+    const up = at(limb(0.45, 0.1, INK), x, 0.95, 0); T.armsRoot.add(up);
+    const fo = limb(0.4, 0.1, INK); up.end.add(fo);
+    const hand = circ(0.15, 0xffffff, 0.05); fo.end.add(hand); return { up, fo, hand };
+  });
+  return T;
+}
+function poseIdle(T) {
+  T.rig.position.set(0, 0, 0); T.rig.rotation.z = 0; T.body.scale.set(1, 1, 1);
+  T.legs.forEach(L => { L.th.rotation.z = 0; L.sn.rotation.z = 0; L.shoe.rotation.z = 0; });
+  T.arms.forEach((A, i) => { A.up.rotation.z = i ? 0.35 : -0.35; A.fo.rotation.z = i ? 0.3 : -0.3; });
+  T.tails.forEach((tl, i) => tl.rotation.z = -1.7 - i * 0.4);
+  T.eyes.forEach(e => { e.pupil.position.set(0, 0, 0.03); e.lid.scale.y = 0.001; });
+  T.toasts.forEach(tt => { tt.position.y = 1.45; tt.rotation.z = 0; });
+  T.brows.forEach(b => b.position.y = 1.52);
+  T.smile.visible = true; T.oMouth.visible = false; T.band.visible = true; T.band.scale.set(1, 1, 1);
+  T.legsRoot.scale.set(1, 1, 1); T.armsRoot.visible = true; T.armsRoot.scale.set(1, 1, 1);
+}
+function poseRun(T, t, f = 2.4, amp = 1) {
+  const p = t * f * Math.PI * 2;
+  T.legs.forEach((L, i) => {
+    const ph = p + i * Math.PI;
+    L.th.rotation.z = Math.sin(ph) * 0.85 * amp;
+    L.sn.rotation.z = -(0.25 + Math.max(0, -Math.cos(ph)) * 1.3) * amp;
+    L.shoe.rotation.z = 0.2 * Math.sin(ph) * amp;
+  });
+  T.arms.forEach((A, i) => {
+    const ph = p + (i ? 0 : Math.PI);
+    A.up.rotation.z = Math.sin(ph) * 0.9 * amp + (i ? 0.25 : -0.25); A.fo.rotation.z = 1.4 * amp;
+  });
+  T.rig.position.y = Math.abs(Math.sin(p)) * 0.24 * amp;
+  const sq = Math.cos(2 * p) * 0.05 * amp; T.body.scale.set(1 + sq, 1 - sq, 1);
+  T.rig.rotation.z = -0.1 * amp;
+  T.tails.forEach((tl, i) => tl.rotation.z = -1.45 - i * 0.35 + Math.sin(p * 2 + i) * 0.35 * amp);
+  T.eyes.forEach(e => e.pupil.position.set(0.09 + Math.sin(p * 2 + 0.6) * 0.03 * amp, Math.cos(p * 2) * 0.05 * amp, 0.03));
+  T.brows.forEach(b => b.position.y = 1.48);
+}
+
+function makeBagel(r = 0.6) {
+  const g = new THREE.Group(), face = new THREE.Group(); g.add(face);
+  face.add(ring(r * 0.26, r, BAGEL, 0.06));
+  const shine = at(new THREE.Mesh(new THREE.RingGeometry(r * 0.62, r * 0.8, 24, 1, 0.5, 1.6), MT(0xffffff, 0.35)), 0, 0, 0.01); face.add(shine);
+  [[-0.55, 0.62, 0.4], [0.5, 0.55, -0.6], [-0.7, -0.3, 1.2], [0.72, -0.25, -0.2], [0.0, -0.75, 0.3]].forEach(([x, y, a]) => {
+    const s = at(rr(r * 0.12, r * 0.06, r * 0.03, 0xfff3d6, 0), x * r, y * r, 0.02); s.rotation.z = a; face.add(s);
+  });
+  g.eyes = [-0.3, 0.3].map(x => { const e = at(makeEye(r * 0.24, BAGEL), x * r, r * 0.5, 0.05); face.add(e); return e; });
+  g.flat = at(rr(r * 0.4, r * 0.08, r * 0.04, INK, 0), 0, -r * 0.55, 0.05); face.add(g.flat);
+  g.o = at(circ(r * 0.12, 0x7a1f35, 0.04), 0, -r * 0.58, 0.05); face.add(g.o); g.o.visible = false;
+  g.scale.y = 0.9; return g;
+}
+function makeFan(kind, color, r) {
+  const g = new THREE.Group();
+  if (kind === 'toast') g.add(makeToast(0.9, 1.0, color, 0.05));
+  else g.add(ring(0.12, 0.48, color, 0.05));
+  const ey = kind === 'toast' ? 0.12 : 0.22;
+  [-0.17, 0.17].forEach(x => { const e = at(circ(0.11, 0xffffff, 0.03), x, ey, 0.03); e.add(at(circ(0.05, INK, 0), 0, -0.02, 0.01)); g.add(e); });
+  g.add(at(circ(0.08, 0x7a1f35, 0.03), 0, kind === 'toast' ? -0.17 : -0.27, 0.03));
+  g.arms = [-0.42, 0.42].map((x, i) => { const a = at(limb(0.42, 0.07, INK), x, -0.05, -0.05); a.add(at(circ(0.09, 0xffffff, 0.03), 0, -0.42, 0.01)); g.add(a); return a; });
+  g.phase = r() * Math.PI * 2; return g;
+}
+function makeBuddy() {
+  const B = { root: new THREE.Group() };
+  B.body = makeToast(1.1, 1.3); at(B.body, 0, 0.75, 0); B.root.add(B.body);
+  [-0.2, 0.2].forEach(x => { const e = at(circ(0.13, 0xffffff, 0.04), x, 0.15, 0.03); e.add(at(circ(0.06, INK, 0), 0.03, 0, 0.01)); B.body.add(e); });
+  B.body.add(at(circ(0.11, 0x7a1f35, 0.04), 0, -0.18, 0.03));
+  B.legs = [-0.25, 0.25].map(x => { const l = at(limb(0.5, 0.09, INK), x, 0.12, -0.05); l.add(at(rr(0.36, 0.18, 0.09, 0x4f7cff, 0.04), 0.08, -0.55, 0.01)); B.root.add(l); return l; });
+  B.arms = [-0.6, 0.6].map(x => { const a = at(limb(0.45, 0.08, INK), x, 0.8, 0.05); a.add(at(circ(0.11, 0xffffff, 0.04), 0, -0.45, 0.01)); B.root.add(a); return a; });
+  return B;
+}
+
+/* ---------- scenes ---------- */
+function newScene() { return { scene: new THREE.Scene(), hud: new THREE.Scene() }; }
+
+function sceneDawn() {
+  const { scene: S, hud } = newScene(), G = -1.38, tx = -1.4;
+  const wallMat = M(0x253061), tileMat = M(0x2e3b73);
+  S.add(at(new THREE.Mesh(new THREE.PlaneGeometry(W + 6, H + 6), wallMat), 0, 0, -6));
+  const wx = 3.6, wy = 2.15;
+  const sky = at(gradPlane(3.9, 2.7, 0x101848, 0x2a2f6e), wx, wy, -5.6); S.add(sky);
+  const sun = at(circ(0.55, 0xffd23f, 0), wx + 0.5, 0.2, -5.5); S.add(sun);
+  S.add(at(new THREE.Mesh(new THREE.PlaneGeometry(4.6, 3), wallMat), wx, wy - 1.3 - 1.5, -5.4));
+  S.add(at(frame(4.2, 3.0, 0.2, 0.2, 0xfdfdfd, 0.08), wx, wy, -5.3));
+  S.add(at(rr(0.14, 2.7, 0, 0xfdfdfd, 0.05), wx, wy, -5.29));
+  S.add(at(rr(3.9, 0.14, 0, 0xfdfdfd, 0.05), wx, wy, -5.28));
+  S.add(at(rr(4.8, 0.22, 0.08, 0xfdfdfd, 0.07), wx, wy - 1.6, -5.2));
+  S.add(at(rr(0.6, 0.5, 0.1, 0xff7a59, 0.06), wx - 1.5, wy - 1.24, -5.1));
+  [[-0.2, 0.42], [0.15, 0.5], [0, 0.62]].forEach(([dx, dy]) => S.add(at(circ(0.22, 0x5cc96b, 0.05), wx - 1.5 + dx, wy - 1.24 + dy, -5.15)));
+  for (let i = -9; i <= 9; i++) for (let j = 0; j < 2; j++) S.add(at(rr(0.92, 0.92, 0.14, tileMat, 0), i, -0.85 + j, -5.0));
+  S.add(at(rr(W + 4, 3.4, 0, 0x4f7cff, 0.08), 0, G - 1.9, -1));
+  for (let x = -7.5; x <= 7.5; x += 3) { S.add(at(rr(2.6, 2.3, 0.16, 0x6b93ff, 0.06), x, G - 1.9, -0.9)); S.add(at(circ(0.12, 0xffd23f, 0.04), x + 0.95, G - 1.2, -0.85)); }
+  S.add(at(rr(W + 4, 0.45, 0.12, 0xff7a59, 0.08), 0, G - 0.22, -0.5));
+  // microwave with the clock
+  S.add(at(rr(2.8, 1.7, 0.22, 0xe9ecf5, 0.08), -5.6, G + 0.86, -0.4));
+  S.add(at(rr(1.6, 1.1, 0.12, 0x2d3561, 0.05), -6.0, G + 0.86, -0.38));
+  const clk = { mono: '"Courier New", ui-monospace, monospace' };
+  const c559 = at(label(0.9, 0.38, '5:59', { bg: '#14182e', fill: '#6dff9e', stroke: null, font: clk.mono, size: 0.8 }, 120), -4.75, G + 1.25, -0.37); S.add(c559);
+  const c600 = at(label(0.9, 0.38, '6:00', { bg: '#14182e', fill: '#ffd23f', stroke: null, font: clk.mono, size: 0.8 }, 120), -4.75, G + 1.25, -0.37); S.add(c600);
+  for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) S.add(at(rr(0.26, 0.16, 0.05, 0xb9c0d4, 0.03), -4.95 + i * 0.4, G + 0.75 - j * 0.3, -0.37));
+  // mug
+  S.add(at(ring(0.11, 0.2, 0xffd23f, 0.05), 2.02, G + 0.38, -0.32));
+  S.add(at(rr(0.62, 0.7, 0.14, 0xffd23f, 0.06), 1.7, G + 0.35, -0.3));
+  S.add(at(circ(0.12, JAM, 0), 1.7, G + 0.38, -0.28));
+
+  const T = makeToaster(); T.root.scale.setScalar(0.95); S.add(T.root);
+  const zs = [0, 1, 2].map(() => { const z = label(0.8, 0.8, 'Z', { fill: '#cfe3ff' }, 140); S.add(z); return z; });
+  const bang = label(1.0, 1.3, '!', { fill: '#ffd23f', size: 0.85 }, 160); S.add(bang);
+  const overlay = at(new THREE.Mesh(new THREE.PlaneGeometry(W + 6, H + 6), MT(0x0a0e35, 0.5)), 0, 0, 6); S.add(overlay);
+  const cap = makeCaption(hud);
+  const lyrics = [[0, 'He wakes before dawn'], [2.6, 'In a chrome little box'], [4.9, 'He ties up his cord'], [7.4, 'Says, “This time is mine”', { fill: '#ffd23f' }]];
+
+  return {
+    tag: 'Verse 1', name: 'Wake Up, Chrome', dur: 10.5, poster: 6.2, scene: S, hud,
+    desc: 'Before dawn on the counter. Eyes snap open, the cord gets tied on like a sweatband, and legs sprout.',
+    update(t, cam) {
+      const k = clamp01((t - 2.6) / 3.4);
+      wallMat.color.copy(lerpC(0x253061, 0x7fd1c7, k)); tileMat.color.copy(lerpC(0x2e3b73, 0xb9f0e6, k));
+      sky.setColors(lerpC(0x101848, 0x5ec8ff, k), lerpC(0x2a2f6e, 0xffb36b, k));
+      sun.position.y = 0.2 + smooth((t - 2.6) / 4) * 2.3;
+      overlay.material.opacity = 0.5 * (1 - smooth(k));
+      c559.visible = t < 2.6; c600.visible = !c559.visible;
+
+      poseIdle(T);
+      const lk = clamp01((t - 6.0) / 0.6), ls = elasticOut(lk);
+      let x = tx;
+      if (t > 6.7) { const rt = t - 6.7; poseRun(T, rt, 2.6, Math.min(1, rt * 2)); if (t > 8.7) x = tx + Math.pow(t - 8.7, 2) * 5; }
+      const sleeping = t < 2.6;
+      T.eyes.forEach(e => { e.lid.scale.y = sleeping ? 1 : Math.max(0.001, 1 - clamp01((t - 2.6) / 0.12)); });
+      if (sleeping) { const b = Math.sin(t * 2.5) * 0.035; T.body.scale.set(1 - b, 1 + b, 1); }
+      T.oMouth.visible = t >= 2.6 && t < 4.4; T.smile.visible = !T.oMouth.visible;
+      if (t >= 4.4 && t < 6.7) T.eyes.forEach(e => e.pupil.position.set(0.1, 0.06, 0.03));
+      const bk = clamp01((t - 4.9) / 0.7); T.band.visible = bk > 0; T.band.scale.x = Math.max(0.001, backOut(bk));
+      if (bk > 0 && t < 6.7) T.tails.forEach((tl, i) => tl.rotation.z = -1.7 - i * 0.4 + Math.sin(t * 9 + i) * 0.25 * (1 - clamp01((t - 5.6) / 0.6)));
+      T.legsRoot.scale.y = Math.max(0.001, ls); T.armsRoot.visible = lk > 0; T.armsRoot.scale.set(Math.max(0.001, ls), Math.max(0.001, ls), 1);
+      const hop = (t >= 2.6 && t < 3.1) ? Math.sin((t - 2.6) / 0.5 * Math.PI) * 0.6 : 0;
+      T.root.position.set(x, G + 1.27 * 0.95 * ls + hop, 0);
+
+      zs.forEach((z, i) => { const ph = (t * 0.55 + i / 3) % 1; at(z, tx + 1.3 + ph * 0.9, G + 2.2 + ph * 1.5, 1); z.material.opacity = Math.sin(ph * Math.PI); z.scale.setScalar(0.6 + ph * 0.6); z.visible = sleeping; });
+      bang.visible = t >= 2.6 && t < 3.7; const bkk = backOut((t - 2.6) / 0.25); bang.scale.set(bkk, bkk, 1); at(bang, tx + 1.7, G + 2.9, 1);
+
+      const zk = smooth((t - 2.8) / 4); cam.zoom = 1.22 - 0.22 * zk; cam.position.x = -1.0 * (1 - zk); cam.position.y = 0.5 * (1 - zk);
+      sing(cap, lyrics, t);
+    }
+  };
+}
+
+function sceneSprint() {
+  const { scene: S, hud } = newScene(), G = -2.4, tx = -0.8;
+  const wallMat = M(0x7fd1c7), stripeMat = M(0x9fe0d6);
+  S.add(at(plane(W + 6, H + 6, wallMat), 0, 0, -8));
+  const far = at(new THREE.Group(), 0, 0, -7); S.add(far);
+  for (let i = -14; i <= 14; i++) far.add(at(new THREE.Mesh(new THREE.PlaneGeometry(0.55, H + 2), stripeMat), i * 1.4, 0, 0));
+  const mid = at(new THREE.Group(), 0, 0, -4); S.add(mid);
+  const magnets = [0xff4d6d, 0xffd23f, 0x4f7cff];
+  for (let c = -2; c <= 2; c++) {
+    const o = c * 9;
+    mid.add(at(rr(2.4, 4.6, 0.3, 0xf4f7ff, 0.08), o - 3, G + 2.3, 0));
+    mid.add(at(rr(2.4, 0.08, 0, INK, 0), o - 3, G + 3.15, 0.02));
+    mid.add(at(rr(0.14, 0.8, 0.07, CHROME, 0.04), o - 2.05, G + 3.7, 0.03));
+    mid.add(at(rr(0.14, 1.1, 0.07, CHROME, 0.04), o - 2.05, G + 2.3, 0.03));
+    magnets.forEach((m, i) => mid.add(at(circ(0.13, m, 0.04), o - 3.5 + i * 0.35, G + 3.9 - (i % 2) * 0.25, 0.03)));
+    mid.add(at(rr(4.2, 2.0, 0.1, 0xff7a59, 0.08), o + 1.0, G + 1.0, 0));
+    mid.add(at(rr(4.5, 0.3, 0.1, 0xffd23f, 0.07), o + 1.0, G + 2.12, 0.02));
+    mid.add(at(rr(1.6, 0.9, 0.12, 0x2d3561, 0.05), o + 0.3, G + 0.95, 0.03));
+    mid.add(at(rr(1.4, 0.12, 0.06, CHROME, 0.04), o + 0.3, G + 1.6, 0.03));
+    mid.add(at(rr(4.2, 1.6, 0.12, 0x4f7cff, 0.08), o + 1.0, G + 5.4, 0));
+    mid.add(at(rr(0.5, 0.7, 0.12, 0xd7263d, 0.05), o + 2.5, G + 2.62, 0.03));
+    mid.add(at(rr(0.58, 0.18, 0.06, 0xffd23f, 0.04), o + 2.5, G + 3.0, 0.04));
+  }
+  S.add(at(rr(W + 6, 2.4, 0, 0xfff0c2, 0), 0, G - 1.2, -3.5));
+  S.add(at(rr(W + 6, 0.1, 0, INK, 0), 0, G, -3.4));
+  const floor = at(new THREE.Group(), 0, 0, -3.45); S.add(floor); const chk = M(0xff8fa3);
+  for (let i = -7; i <= 7; i++) { floor.add(at(new THREE.Mesh(new THREE.PlaneGeometry(1, 1), chk), i * 2 + 0.5, G - 0.55, 0)); floor.add(at(new THREE.Mesh(new THREE.PlaneGeometry(1, 1), chk), i * 2 + 1.5, G - 1.55, 0)); }
+
+  const lines = [...Array(7)].map((_, i) => { const l = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 0.08), MT(0xffffff, 0.8)); l.position.set(0, -1.6 + i * 0.75, -0.5); S.add(l); return l; });
+  const dust = [...Array(8)].map(() => { const d = new THREE.Mesh(new THREE.CircleGeometry(0.3, 24), MT(0xffffff, 0.8)); S.add(d); return d; });
+  const buddies = [0, 1].map(() => { const b = makeBuddy(); S.add(b.root); return b; });
+  const T = makeToaster(); S.add(T.root);
+
+  const cap = makeCaption(hud);
+  const echoes = [1, 2].map(k => { const e = new THREE.Mesh(cap.geometry, new THREE.MeshBasicMaterial({ map: cap.tex, transparent: true, opacity: 0, depthWrite: false })); e.position.z = 0.9 - k * 0.1; hud.add(e); return e; });
+  const lyrics = [[0, 'Run, little toaster, run!', { fill: '#ffd23f' }], [2, 'Run, little toaster, run!', { fill: '#ff8fa3' }], [4, 'Show the bread what you can do'], [6, 'I can do things too!', { fill: '#ffd23f' }]];
+
+  return {
+    tag: 'Chorus', name: 'The Sprint', dur: 8, poster: 0.4, scene: S, hud,
+    desc: 'A side-scrolling kitchen dash. Toast pops on the beat while two bread fans try to keep up.',
+    update(t, cam) {
+      const pb = pulse(t);
+      wallMat.color.copy(lerpC(0x7fd1c7, 0xb4f3ea, pb * 0.8));
+      far.position.x = -((t * 1.2) % 1.4); mid.position.x = -((t * 4) % 9); floor.position.x = -((t * 7) % 2);
+      poseIdle(T); poseRun(T, t, 3.2, 1); T.root.position.set(tx, G + 1.27, 0);
+      T.toasts.forEach((tt, i) => { const u = ((t + i * BEAT) % (2 * BEAT)) / (2 * BEAT), k = Math.min(u / 0.75, 1); tt.position.y = 1.45 + Math.sin(k * Math.PI) * 1.9; tt.rotation.z = (u < 0.75 ? k : 0) * Math.PI * 2 * (i ? 1 : -1); });
+      T.smile.visible = false; T.oMouth.visible = true;
+      lines.forEach((l, i) => { l.position.x = 9 - ((t * 16 + i * 3.7) % 20); l.scale.x = 0.6 + (i % 3) * 0.4; });
+      dust.forEach((d, i) => { const ph = (t * 3.2 + i / dust.length) % 1; d.position.set(tx - 0.6 - ph * 3.2, G + 0.15 + ph * 0.5, 0.5); d.scale.setScalar(0.3 + ph * 0.9); d.material.opacity = 0.85 * (1 - ph); });
+      buddies.forEach((b, i) => {
+        const p = (t * 3.6 + i * 0.4) * Math.PI * 2, bx = -5.2 - i * 1.8 + Math.sin(t * 0.8 + i) * 0.4;
+        b.root.position.set(bx, G + 0.55 + Math.abs(Math.sin(p)) * 0.2, -0.2 - i * 0.1);
+        b.legs.forEach((l, j) => l.rotation.z = Math.sin(p + j * Math.PI) * 0.8);
+        b.arms.forEach((a, j) => a.rotation.z = (j ? 2.6 : -2.6) + Math.sin(t * 10 + j) * 0.4);
+        b.root.rotation.z = -0.08;
+      });
+      const l = sing(cap, lyrics, t); const s = cap.scale.x * (1 + 0.07 * pb); cap.scale.set(s, s, 1);
+      const hook = l.text.startsWith('Run'), dt = t - l.start;
+      echoes.forEach((e, k) => { const g = Math.min(1, dt * 2); e.position.x = (k + 1) * 0.28 * g; e.position.y = cap.position.y + (k + 1) * 0.42 * g; e.scale.copy(cap.scale); e.material.opacity = hook ? (0.4 / (k + 1)) * Math.max(0, 1 - dt * 0.7) : 0; });
+      cam.zoom = 1 + pb * 0.015;
+    }
+  };
+}
+
+function sceneStare() {
+  const { scene: S, hud } = newScene(), G = -2.4;
+  S.add(at(plane(W + 6, H + 6, 0x4a5a8a), 0, 0, -8));
+  const block = M(0x56679c);
+  for (let j = 0; j < 12; j++) for (let i = -9; i <= 9; i++) S.add(at(rr(1.18, 0.5, 0.06, block, 0), i * 1.3 + (j % 2) * 0.65, G + 0.35 + j * 0.62, -7.5));
+  S.add(at(rr(W + 6, 2.4, 0, 0x8f7a66, 0.08), 0, G - 1.2, -3));
+  // top shelf with jars
+  S.add(at(rr(11.4, 0.25, 0.06, 0xb07a4a, 0.07), -1.6, 2.6, -2));
+  for (let i = 0; i < 9; i++) {
+    const x = -6.6 + i * 1.25, c = i % 3 === 1 ? 0xc98a4b : 0xd7263d;
+    S.add(at(rr(0.7, 0.9, 0.14, c, 0.06), x, 3.2, -2.2)); S.add(at(rr(0.78, 0.22, 0.08, 0xffd23f, 0.05), x, 3.72, -2.18)); S.add(at(rr(0.5, 0.34, 0.06, 0xfff6d6, 0), x, 3.15, -2.17));
+  }
+  // bagel shelf
+  S.add(at(rr(11.4, 0.25, 0.06, 0xb07a4a, 0.07), -1.6, 0.1, -2));
+  [-6.5, 3.2].forEach(x => S.add(at(rr(0.16, 0.6, 0.04, 0x7a5233, 0.05), x, -0.25, -2.05)));
+  const bagels = [-6.3, -4.5, -2.7, -0.9, 0.9, 2.7].map(x => { const b = at(makeBagel(0.62), x, 0.82, -1.9); S.add(b); return b; });
+  // flour sacks + crates
+  S.add(at(rr(1.7, 2.0, 0.55, 0xf4efe6, 0.08), -6.4, G + 1.0, -0.6));
+  S.add(at(rr(0.5, 0.25, 0.1, 0xc9b79c, 0.05), -6.4, G + 2.0, -0.55));
+  S.add(at(label(1.5, 0.5, 'FLOUR', { fill: '#1d1b2a', stroke: null, size: 0.75 }, 120), -6.4, G + 0.9, -0.55));
+  S.add(at(rr(1.3, 1.5, 0.45, 0xf4efe6, 0.08), -5.0, G + 0.75, -0.7));
+  [[-3.4, G + 0.55], [-1.6, G + 0.55], [-2.5, G + 1.65]].forEach(([x, y], i) => {
+    S.add(at(rr(1.8, 1.1, 0.06, 0xc98a4b, 0.07), x, y, -1.0 + i * 0.05));
+    [-0.2, 0.2].forEach(dy => S.add(at(rr(1.8, 0.06, 0, 0x9a6633, 0), x, y + dy, -0.98 + i * 0.05)));
+  });
+  // swinging door
+  S.add(at(rr(2.4, 4.4, 0.1, 0x1b1f33, 0.08), 6.2, G + 2.2, -1));
+  const door = at(new THREE.Group(), 5.0, G + 2.15, 3); S.add(door);
+  door.add(at(rr(2.3, 4.3, 0.1, 0xc0c8d6, 0.07), 1.15, 0, 0));
+  door.add(at(circ(0.38, 0x2d3561, 0.08), 1.15, 1.0, 0.02));
+  door.add(at(rr(2.1, 0.6, 0.05, 0x9aa3b5, 0.04), 1.15, -1.7, 0.02));
+  door.add(at(rr(1.5, 0.42, 0.06, 0xfff6d6, 0.04), 1.15, 0.0, 0.02));
+  door.add(at(label(1.4, 0.4, 'STAFF ONLY', { fill: '#d7263d', stroke: null, size: 0.7 }, 100), 1.15, 0.0, 0.04));
+
+  const T = makeToaster(); T.root.scale.setScalar(0.85); S.add(T.root);
+  const xOf = t => -9.5 + 1.35 * t + (t > 6.2 ? 0.75 * Math.pow(t - 6.2, 2) : 0);
+  let tDoor = 10; for (let s = 0; s < 10; s += 0.01) if (xOf(s) > 4.3) { tDoor = s; break; }
+  const cap = makeCaption(hud);
+  const lyrics = [[0, 'He jogs by the crates'], [2.5, 'The bagels all stare'], [5, 'He says, “Watch me now”', { fill: '#ffd23f' }], [7.5, 'And he keeps his pace']];
+
+  return {
+    tag: 'Verse 2', name: 'Bagel Stare-Down', dur: 10, poster: 3.6, scene: S, hud,
+    desc: 'Through the store backroom past a shelf of judgy bagels, then out the swinging door.',
+    update(t, cam) {
+      const x = xOf(t);
+      poseIdle(T); poseRun(T, t, 2.4, 0.8); T.root.position.set(x, G + 1.27 * 0.85, 0);
+      if (t > 5 && t < 6.4) { T.eyes.forEach(e => e.pupil.position.set(-0.1, 0.12, 0.03)); T.smile.visible = false; T.oMouth.visible = t < 5.9; T.brows.forEach(b => b.position.y = 1.6); }
+      if (t > 6.4) { T.smile.visible = true; }
+      const wide = smooth((t - 6.4) / 0.3);
+      bagels.forEach((b, i) => {
+        const look = Math.max(-1, Math.min(1, (x - b.position.x) * 0.25));
+        b.eyes.forEach(e => { e.pupil.position.set(look * 0.07, -0.05, 0.03); e.lid.scale.y = Math.max(0.001, 0.55 - 0.45 * wide + Math.max(0, Math.sin(t * 0.9 + i) - 0.97) * 15); });
+        b.rotation.z = -look * 0.08; b.o.visible = wide > 0.5; b.flat.visible = !b.o.visible;
+      });
+      const dt = Math.max(0, t - tDoor), th = dt > 0 ? 2.4 * Math.exp(-1.3 * dt) * Math.sin(4.5 * dt) : 0;
+      door.scale.x = Math.max(0.03, Math.abs(Math.cos(th)));
+      cam.position.x = Math.max(-1, Math.min(1, x * 0.15));
+      sing(cap, lyrics, t);
+    }
+  };
+}
+
+function sceneFinish() {
+  const { scene: S, hud } = newScene(), G = -2.3, r = rng(7);
+  S.add(at(gradPlane(W + 8, H + 8, 0x3fb4ff, 0xc9f1ff), 0, 0, -9));
+  const clouds = [0, 1, 2].map(i => { const c = new THREE.Group(); [[-0.6, 0, 0.5], [0, 0.25, 0.65], [0.6, 0, 0.5]].forEach(([x, y, rad]) => c.add(at(circ(rad, 0xffffff, 0), x, y, 0))); c.position.set(0, 3.6 + (i % 2) * 0.4, -8.5); S.add(c); return c; });
+  S.add(at(rr(W + 6, 4.4, 0, 0x3d4b8f, 0.08), 0, 0.5, -6));
+  [-0.55, 0.65, 1.85].forEach(y => S.add(at(rr(W + 6, 0.12, 0, 0x2c3870, 0), 0, y, -5.9)));
+  const crustCols = [CRUST, 0xb5672e, 0xe0a050, 0xd98f4e];
+  const fans = [];
+  for (let j = 2; j >= 0; j--) for (let i = 0; i < 17; i++) {
+    const kind = r() < 0.35 ? 'bagel' : 'toast', col = kind === 'bagel' ? BAGEL : crustCols[Math.floor(r() * crustCols.length)];
+    const f = makeFan(kind, col, r); f.base = new THREE.Vector3(-8.4 + i * 1.05 + (j % 2) * 0.5, -0.95 + j * 1.2, -5.5 + (2 - j) * 0.1);
+    f.scale.setScalar(0.78); S.add(f); fans.push(f);
+  }
+  S.add(at(rr(6.4, 0.9, 0.12, JAM, 0.07), -1.2, 3.55, -4));
+  S.add(at(label(6.0, 0.8, 'FOUR CRUSTY MILES', { fill: '#fff' }, 130), -1.2, 3.55, -3.95));
+  S.add(at(rr(0.2, 1.4, 0.05, 0x9aa3b5, 0.05), 6.6, 3.2, -4));
+  const siren = at(circ(0.36, 0xff3344, 0.06), 6.6, 3.95, -3.9); S.add(siren);
+  const beamShape = new THREE.Shape(); beamShape.moveTo(0, 0); beamShape.lineTo(7, 1.1); beamShape.lineTo(7, -1.1); beamShape.lineTo(0, 0);
+  const beam = at(new THREE.Mesh(new THREE.ShapeGeometry(beamShape), MT(0xff6a6a, 0.22)), 6.6, 3.95, -3.95); S.add(beam);
+  S.add(at(rr(W + 6, 0.5, 0, 0xffffff, 0.07), 0, -1.85, -3));
+  S.add(at(label(14, 0.45, 'TOAST RACE  •  KITCHEN 4K  •  TOAST RACE  •  KITCHEN 4K', { fill: '#3d4b8f', stroke: null, size: 0.8 }, 70), 0, -1.85, -2.95));
+  S.add(at(rr(W + 6, 2.4, 0, 0xe8633a, 0.08), 0, G - 1.0, -2));
+  [G - 0.35, G - 1.3].forEach(y => S.add(at(rr(W + 6, 0.07, 0, 0xffffff, 0), 0, y, -1.9)));
+  for (let row = 0; row < 10; row++) for (let col = 0; col < 2; col++) S.add(at(plane(0.25, 0.25, (row + col) % 2 ? 0xffffff : INK), 3.48 + col * 0.25, -2.22 - row * 0.25, -1.85));
+  // tape between two posts, seen at an angle
+  const P1 = new THREE.Vector2(4.0, 0.0), P2 = new THREE.Vector2(3.2, -2.0), Mid = P1.clone().add(P2).multiplyScalar(0.5);
+  S.add(at(rr(0.18, 2.2, 0.05, 0xffffff, 0.05), P1.x, -1.0, -1.7));
+  S.add(at(rr(0.22, 2.6, 0.05, 0xffffff, 0.06), P2.x, -3.3, 4));
+  const halves = [[P1, -1.6], [P2, 4.05]].map(([P, z]) => {
+    const g = at(new THREE.Group(), P.x, P.y, z), len = P.distanceTo(Mid);
+    g.add(at(rr(len, 0.1, 0.03, JAM, 0.03), len / 2, 0, 0)); g.a0 = Math.atan2(Mid.y - P.y, Mid.x - P.x); S.add(g); return g;
+  });
+  const T = makeToaster(); T.root.scale.setScalar(0.9); S.add(T.root);
+  const pan = new THREE.Group(); pan.add(circ(0.62, 0x2e2e3e, 0.07)); pan.add(at(circ(0.48, 0x454559, 0), 0, 0, 0.01));
+  pan.add(at(circ(0.3, 0xffffff, 0), -0.05, 0.02, 0.02)); pan.add(at(circ(0.13, 0xffc21a, 0.03), 0, 0.04, 0.04));
+  pan.add(at(rr(1.0, 0.16, 0.08, 0x7a4a2a, 0.05), 1.05, 0, -0.01)); T.rig.add(at(pan, 0.1, 2.85, 0.3));
+  const medal = new THREE.Group(); [-1, 1].forEach(s => { const rb = at(rr(0.16, 0.7, 0.03, 0x4f7cff, 0.03), s * 0.16, 0.3, 0); rb.rotation.z = s * 0.35; medal.add(rb); });
+  medal.add(at(circ(0.24, GOLD, 0.05), 0, 0, 0.02)); medal.add(at(circ(0.14, 0xffe27a, 0), 0, 0, 0.03)); T.body.add(medal);
+  const N = 220, conf = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.14, 0.24), new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }), N);
+  const palette = [0xff4d6d, 0xffd23f, 0x4f7cff, 0x5cc96b, 0xffffff, 0xff8fa3], cd = [], dummy = new THREE.Object3D();
+  for (let i = 0; i < N; i++) {
+    const burst = i < 100; conf.setColorAt(i, new THREE.Color(palette[i % palette.length]));
+    cd.push(burst ? { t0: 4.5, x: Mid.x, y: Mid.y, vx: (r() - 0.5) * 9, vy: 4 + r() * 6, g: 9, spin: (r() - 0.5) * 20, sway: 0 }
+                  : { t0: 5.6 + r() * 1.2, x: -3 + r() * 13, y: 4.8 + r() * 1.5, vx: 0, vy: -(1.2 + r() * 1.2), g: 0, spin: (r() - 0.5) * 10, sway: 0.4 + r() * 0.5, ph: r() * 6 });
+  }
+  conf.position.z = 5; S.add(conf);
+  const cap = makeCaption(hud);
+  const lyrics = [[0, 'So when the siren blows'], [2.25, 'And the crowd leans in'], [4.5, 'Cross that line, lift that pan!', { fill: '#ffd23f' }], [7.2, 'Yeah, I knew you can!', { fill: '#ff8fa3' }]];
+
+  return {
+    tag: 'Final chorus', name: 'Finish Line', dur: 10, poster: 7.6, scene: S, hud,
+    desc: 'The siren, a crowd of bread, the tape snaps, a frying pan held high, and confetti everywhere.',
+    update(t, cam) {
+      const pb = pulse(t), wild = t < 4.5 ? 0.5 : 1;
+      clouds.forEach((c, i) => c.position.x = ((i * 7.5 + t * 0.35) % 24) - 12);
+      fans.forEach(f => { const b = Math.abs(Math.sin(t * Math.PI * 2 + f.phase)); f.position.set(f.base.x, f.base.y + b * 0.22 * wild + pb * 0.05, f.base.z); f.arms.forEach((a, j) => a.rotation.z = (j ? 1 : -1) * (wild > 0.6 ? 2.7 + Math.sin(t * 9 + f.phase + j) * 0.35 : 0.5 + b * 1.6)); });
+      siren.fill.material.color.set((t * 4) % 1 < 0.5 ? 0xff2a3a : 0x7a1020); beam.rotation.z = t * 3.2; beam.material.opacity = 0.18 + 0.1 * Math.sin(t * 8);
+
+      poseIdle(T); let x;
+      if (t < 4.5) { x = -10 + 3 * t; poseRun(T, t, 3.0, 1); T.oMouth.visible = true; T.smile.visible = false; }
+      else if (t < 6.0) { const d = t - 4.5; x = 3.5 + 3 * d - d * d; poseRun(T, t, 3.0 - d, 1 - d * 0.5); }
+      else { x = 5.25; const h = Math.abs(Math.sin((t - 6) * Math.PI * 2)); T.rig.position.y = h * 0.45; T.legs.forEach((L, i) => { L.th.rotation.z = (i ? 0.5 : -0.5) * h; L.sn.rotation.z = (i ? -0.8 : 0.8) * h; }); T.eyes.forEach(e => e.pupil.position.set(0, 0.06, 0.03)); T.oMouth.visible = true; T.smile.visible = false; }
+      const pk = backOut((t - 5.8) / 0.4); pan.visible = t > 5.8; pan.scale.setScalar(Math.max(0.001, pk)); pan.rotation.z = 0.15 + Math.sin(t * 6) * 0.08;
+      if (t > 5.8) T.arms.forEach((A, i) => { A.up.rotation.z = (i ? 2.75 : -2.75); A.fo.rotation.z = i ? 0.45 : -0.45; });
+      medal.visible = t > 5.3; medal.position.set(0, 0.32 + Math.max(0, 1 - smooth((t - 5.3) / 0.35)) * 3, 0.3);
+      T.root.position.set(x, G + 1.27 * 0.9, 0);
+
+      halves.forEach(h => { const k = t < 4.5 ? 0 : backOut((t - 4.5) / 0.7); h.rotation.z = h.a0 + (-Math.PI / 2 - h.a0) * k + (t > 4.5 ? Math.sin((t - 4.5) * 10) * 0.2 * Math.exp(-(t - 4.5) * 2) : 0); });
+
+      for (let i = 0; i < N; i++) {
+        const c = cd[i], d = t - c.t0;
+        if (d < 0) { dummy.position.set(0, -50, 0); dummy.scale.setScalar(0.001); }
+        else { dummy.position.set(c.x + c.vx * d + Math.sin(d * 3 + (c.ph || 0)) * c.sway, c.y + c.vy * d - 0.5 * c.g * d * d, 0); dummy.rotation.set(d * c.spin * 0.5, 0, d * c.spin); dummy.scale.setScalar(1); }
+        dummy.updateMatrix(); conf.setMatrixAt(i, dummy.matrix);
+      }
+      conf.instanceMatrix.needsUpdate = true;
+
+      const zk = smooth((t - 4.8) / 1.2); cam.zoom = 1 + 0.28 * zk; cam.position.x = 3.6 * zk; cam.position.y = -0.4 * zk;
+      if (t > 4.5 && t < 5.0) { const s = (1 - (t - 4.5) / 0.5) * 0.12; cam.position.x += Math.sin(t * 90) * s; cam.position.y += Math.cos(t * 77) * s; }
+      sing(cap, lyrics, t);
+    }
+  };
+}
+
+/* ---------- player ---------- */
+const canvas = document.getElementById('c'), stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true }); renderer.autoClear = false; renderer.setClearColor(INK);
+const cam = new THREE.OrthographicCamera(-W / 2, W / 2, H / 2, -H / 2, -100, 100); cam.position.z = 10;
+const hudCam = new THREE.OrthographicCamera(-W / 2, W / 2, H / 2, -H / 2, -100, 100); hudCam.position.z = 10;
+function resize() { const r = stage.getBoundingClientRect(); renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2)); renderer.setSize(Math.max(1, r.width - 8), Math.max(1, r.height - 8), false); }
+new ResizeObserver(resize).observe(stage); resize();
+
+const scenes = [sceneDawn(), sceneSprint(), sceneStare(), sceneFinish()];
+const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+let cur = 0, playing = !reduce, local = scenes[0].poster, last = performance.now();
+const playBtn = document.getElementById('play'), scrub = document.getElementById('scrub'), timeEl = document.getElementById('time'), list = document.getElementById('scenes');
+
+scenes.forEach((s, i) => {
+  const b = document.createElement('button'); b.type = 'button'; b.className = 'scene-btn'; b.id = 'scene-' + i;
+  b.innerHTML = `<span class="tag">${s.tag}</span><span class="name">${s.name}</span><span class="desc">${s.desc}</span>`;
+  b.addEventListener('click', () => select(i, 0)); list.appendChild(b);
+});
+function select(i, t) {
+  cur = i; local = t; scrub.max = scenes[i].dur;
+  [...list.children].forEach((b, j) => b.setAttribute('aria-pressed', String(j === i)));
+}
+function setPlaying(p) { playing = p; playBtn.textContent = p ? 'Pause' : 'Play'; }
+playBtn.addEventListener('click', () => setPlaying(!playing));
+scrub.addEventListener('input', () => { local = parseFloat(scrub.value); setPlaying(false); });
+select(0, reduce ? scenes[0].poster : 0); setPlaying(playing);
+
+function frameLoop(now) {
+  requestAnimationFrame(frameLoop);
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  const s = scenes[cur];
+  if (playing) { local += dt; if (local >= s.dur) local -= s.dur; }
+  cam.zoom = 1; cam.position.set(0, 0, 10);
+  s.update(local, cam); cam.updateProjectionMatrix();
+  renderer.clear(); renderer.render(s.scene, cam); renderer.clearDepth(); renderer.render(s.hud, hudCam);
+  if (playing) scrub.value = local; timeEl.textContent = local.toFixed(1) + 's';
+}
+requestAnimationFrame(frameLoop);
+
+if (document.fonts && document.fonts.load) document.fonts.load('80px "Luckiest Guy"').then(() => redraws.forEach(f => f())).catch(() => {});
+})();
+</script>
